@@ -193,6 +193,18 @@ func loadCafeData(ctx context.Context) (cafes []Cafe, err error) {
 	return
 }
 
+func loadCafeFromDataStore(ctx context.Context) ([]Cafe, error) {
+	lock.Lock()
+	defer lock.Unlock()
+
+	var err error
+	cafes := []Cafe{}
+
+	q := datastore.NewQuery("")
+	_, err = q.GetAll(ctx, &cafes)
+	return cafes, err
+}
+
 func handler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, "Hi, do you love drinking coffe?")
 
@@ -202,9 +214,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 	if reset == "" {
 		log.Infof(ctx, "load cafe data from datastore")
-		q := datastore.NewQuery("")
-		_, err = q.GetAll(ctx, &cafes)
-
+		cafes, err = loadCafeFromDataStore(ctx)
 		if len(cafes) != 0 {
 			return
 		}
@@ -405,6 +415,10 @@ func getCafeLocationElements(cafes []Cafe, lat, long float64) (b []byte, err err
 func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 	ctx := appengine.NewContext(r)
+
+	if len(cafes) == 0 {
+		cafes, _ = loadCafeFromDataStore(ctx)
+	}
 
 	var fbObject FBObject
 	buf := &bytes.Buffer{}

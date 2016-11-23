@@ -543,7 +543,13 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 					returnText = WELCOME_TEXT
 				case "找咖啡店":
 					user.TodoAction = "FIND_CAFE"
-					returnText = "你在哪？？把你的現在位置傳 (Pin📍) 給我吧！"
+					text := "找咖啡店？幫我標記一下位子"
+					quickReplies := []map[string]string{
+						map[string]string{
+							"content_type": "location",
+						},
+					}
+					err = fbSendTextMessage(ctx, senderId, text, quickReplies)
 				default:
 					switch user.TodoAction {
 					case "FIND_CAFE":
@@ -558,7 +564,13 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 						}
 						if r.TopScoringIntent.Intent == "FindCafe" {
 							user.TodoAction = "FIND_CAFE"
-							returnText = "我還沒那麼聰明，可以幫我標記一下位子嗎？"
+							text := "找咖啡店？我還沒那麼聰明，可以幫我標記一下位子嗎？"
+							quickReplies := []map[string]string{
+								map[string]string{
+									"content_type": "location",
+								},
+							}
+							err = fbSendTextMessage(ctx, senderId, text, quickReplies)
 						} else {
 							returnText = "今天天氣不錯，好像適合來杯咖啡"
 						}
@@ -580,8 +592,14 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 				action := payloadItems[0]
 				switch action {
 				case "FIND_CAFE":
-					returnText = "你在哪？？把你的現在位置傳 (Pin📍) 給我吧！"
-					user.TodoAction = fbMsg.Postback.Payload
+					text := "找咖啡店？幫我標記一下位子"
+					quickReplies := []map[string]string{
+						map[string]string{
+							"content_type": "location",
+						},
+					}
+					err = fbSendTextMessage(ctx, senderId, text, quickReplies)
+					user.TodoAction = "FIND_CAFE"
 				case "GET_STARTED":
 					err = fbSendTextMessage(ctx, senderId, WELCOME_TEXT, nil)
 					fallthrough

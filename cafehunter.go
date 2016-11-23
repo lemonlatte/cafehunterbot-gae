@@ -547,10 +547,21 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 				default:
 					switch user.TodoAction {
 					case "FIND_CAFE":
-						returnText = "我不懂你的意思。"
+						returnText = "你好像要給我一個位置"
 					default:
 						user.TodoAction = ""
-						returnText = "我不懂你的意思。"
+						tr := &urlfetch.Transport{Context: ctx}
+						r, err := fetchIntent(tr.RoundTrip, q, false)
+						log.Infof(ctx, "LUIS Result: %+v", r)
+						if err != nil {
+							returnText = "我好像生病了，有點不舒服，等等再回你"
+						}
+						if r.TopScoringIntent.Intent == "FindCafe" {
+							user.TodoAction = "FIND_CAFE"
+							returnText = "我還沒那麼聰明，可以幫我標記一下位子嗎？"
+						} else {
+							returnText = "今天天氣不錯，好像適合來杯咖啡"
+						}
 					}
 				}
 				if err != nil {

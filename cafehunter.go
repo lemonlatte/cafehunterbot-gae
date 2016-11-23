@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -472,6 +473,7 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 				long := payload.Coordinates.Longitude
 
 				if user.TodoAction == "FIND_CAFE" {
+					user.TodoAction = ""
 					b, err = getCafeLocationElements(cafes, lat, long)
 					if err != nil {
 						returnText = "查詢失敗"
@@ -497,6 +499,37 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 					err = fbSendTextMessage(ctx, senderId, text, quickReplies)
 				}
 			} else if fbMsg.Content.QuickReplay != nil {
+				payload := fbMsg.Content.QuickReplay.Payload
+				payloadItems := strings.Split(payload, ":")
+				if len(payloadItems) != 0 {
+					switch payloadItems[0] {
+					case "FIND_CAFE":
+						latlng := strings.Split(payloadItems[1], ",")
+						if len(latlng) != 2 {
+							log.Errorf(ctx, "FIND_CAFE postback arguments error: %+v", latlng)
+							returnText = "查詢錯誤"
+						} else {
+							lat, err := strconv.ParseFloat(latlng[0], 64)
+							if err != nil {
+								return
+							}
+							long, err := strconv.ParseFloat(latlng[1], 64)
+							if err != nil {
+								return
+							}
+							b, err = getCafeLocationElements(cafes, lat, long)
+							if err != nil {
+								returnText = "查詢失敗"
+							} else {
+								if err := fbSendGeneralTemplate(ctx, senderId, json.RawMessage(b)); err != nil {
+									returnText = "查詢失敗"
+								}
+							}
+						}
+					case "KIDDING":
+						err = fbSendTextMessage(ctx, senderId, "你有什麼毛病？", nil)
+					}
+				}
 
 			} else {
 				log.Debugf(ctx, "receive text")

@@ -30,7 +30,7 @@ const (
 	GOOG_MAP_APIKEY = ""
 
 	FBMessageURI = "https://graph.facebook.com/v2.6/me/messages?access_token=" + PAGE_TOKEN
-	WELCOME_TEXT = `你好，歡迎使用 Café Hunter。`
+	WELCOME_TEXT = `你好，歡迎使用 Café Hunter。請用簡單的句子跟我對話，例如：「我要找咖啡店」、「我想喝咖啡」、「士林有什麼推薦的咖啡店嗎？」`
 )
 
 var lock sync.Mutex = sync.Mutex{}
@@ -483,7 +483,7 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 						}
 					}
 				} else {
-					text := "找咖啡店?"
+					text := "尋找這個地點周圍的咖啡店?"
 					quickReplies := []map[string]string{
 						map[string]string{
 							"content_type": "text",
@@ -526,11 +526,13 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 								}
 							}
 						}
+					case "CANCEL":
+						user.TodoAction = ""
+						err = fbSendTextMessage(ctx, senderId, "好，我知道了，有需要在跟我說。", nil)
 					case "KIDDING":
 						err = fbSendTextMessage(ctx, senderId, "你有什麼毛病？", nil)
 					}
 				}
-
 			} else {
 				log.Debugf(ctx, "receive text")
 				text := fbMsg.Content.Text
@@ -541,15 +543,6 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 				case "hi", "hello", "你好", "您好":
 					user.TodoAction = ""
 					returnText = WELCOME_TEXT
-				case "找咖啡店":
-					user.TodoAction = "FIND_CAFE"
-					text := "找咖啡店？幫我標記一下位子"
-					quickReplies := []map[string]string{
-						map[string]string{
-							"content_type": "location",
-						},
-					}
-					err = fbSendTextMessage(ctx, senderId, text, quickReplies)
 				default:
 					switch user.TodoAction {
 					case "FIND_CAFE":
@@ -560,14 +553,19 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 						r, err := fetchIntent(tr.RoundTrip, q, false)
 						log.Infof(ctx, "LUIS Result: %+v", r)
 						if err != nil {
-							returnText = "我好像生病了，有點不舒服，等等再回你"
+							returnText = "我身體不太舒服，等等再回你"
 						}
 						if r.TopScoringIntent.Intent == "FindCafe" {
 							user.TodoAction = "FIND_CAFE"
-							text := "找咖啡店？我還沒那麼聰明，可以幫我標記一下位子嗎？"
+							text := "現在只能用位置搜尋，可以幫我標記一下想找的位置嗎？"
 							quickReplies := []map[string]string{
 								map[string]string{
 									"content_type": "location",
+								},
+								map[string]string{
+									"content_type": "text",
+									"title":        "取消",
+									"payload":      "CANCEL",
 								},
 							}
 							err = fbSendTextMessage(ctx, senderId, text, quickReplies)
@@ -592,10 +590,15 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 				action := payloadItems[0]
 				switch action {
 				case "FIND_CAFE":
-					text := "找咖啡店？幫我標記一下位子"
+					text := "想找咖啡店嗎？給我一個你想搜尋的位置"
 					quickReplies := []map[string]string{
 						map[string]string{
 							"content_type": "location",
+						},
+						map[string]string{
+							"content_type": "text",
+							"title":        "取消",
+							"payload":      "CANCEL",
 						},
 					}
 					err = fbSendTextMessage(ctx, senderId, text, quickReplies)

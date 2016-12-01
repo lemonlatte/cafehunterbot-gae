@@ -268,6 +268,8 @@ func fbSendTextMessage(ctx context.Context, senderId int64, text string, quickRe
 		return
 	}
 
+	defer resp.Body.Close()
+
 	if resp.StatusCode != 200 {
 		log.Infof(ctx, "Deliver status: %s", resp.Status)
 		buffer := bytes.NewBuffer([]byte{})
@@ -374,13 +376,22 @@ func generateTemplateElements(ctx context.Context, items []map[string]interface{
 	return
 }
 
-func getCafeLocationElements(cafes []Cafe, lat, long float64) (b []byte, err error) {
+func cafeToFBTemplate(cafes []Cafe) (summary, items []byte, n int) {
 	results := []map[string]interface{}{}
+
+	if len(cafes) == 0 {
+		return nil, nil, 0
+	}
+
+	markers := []string{}
+
 	for _, cafe := range cafes {
-		if getDistances(lat, long, cafe.Latitude, cafe.Longitude) < 2 {
+		markers = append(markers, fmt.Sprintf("%f,%f", cafe.Latitude, cafe.Longitude))
+
+		if len(results) < 10 {
 			element := map[string]interface{}{
 				"title":     fmt.Sprintf("%s", cafe.Name),
-				"image_url": fmt.Sprintf("https://maps.googleapis.com/maps/api/staticmap?markers=%f,%f&zoom=15&size=400x400", cafe.Latitude, cafe.Longitude),
+				"image_url": fmt.Sprintf("https://maps.googleapis.com/maps/api/staticmap?markers=%f,%f&zoom=15&size=400x200", cafe.Latitude, cafe.Longitude),
 				"item_url":  cafe.Link,
 				"subtitle": fmt.Sprintf(
 					"好喝: %s | Wifi: %s | 安靜: %s\n限時: %s | 插座: %s | 便宜: %s\n地址: %s",
@@ -390,12 +401,12 @@ func getCafeLocationElements(cafes []Cafe, lat, long float64) (b []byte, err err
 				"buttons": []FBButtonItem{
 					FBButtonItem{
 						Type:  "web_url",
-						Title: "Apple Map",
+						Title: "View in Maps",
 						Url:   fmt.Sprintf("http://maps.apple.com/maps?q=%s&z=16", cafe.Address),
 					},
 					FBButtonItem{
 						Type:  "web_url",
-						Title: "Google Map",
+						Title: "View in Google Maps",
 						Url:   fmt.Sprintf("http://maps.google.com.tw/?q=%s", cafe.Address),
 					},
 				},
@@ -404,11 +415,61 @@ func getCafeLocationElements(cafes []Cafe, lat, long float64) (b []byte, err err
 		}
 	}
 
-	if len(results) > 5 {
-		results = results[0:5]
+	summaryResults := []map[string]interface{}{
+		map[string]interface{}{
+			"title": "咖啡店分佈圖",
+			"item_url": fmt.Sprintf(
+				"https://maps.googleapis.com/maps/api/staticmap?zoom=15&size=400x200&markers=%s",
+				strings.Join(markers, "|")),
+			"image_url": fmt.Sprintf(
+				"https://maps.googleapis.com/maps/api/staticmap?zoom=15&size=400x200&markers=%s",
+				strings.Join(markers, "|")),
+		},
+	}
+	s, _ := json.Marshal(summaryResults)
+	b, _ := json.Marshal(results)
+	return s, b, len(cafes)
+}
+
+func findCafeByGeocoding(ctx context.Context, cafes []Cafe, lat, long float64, precision int) []Cafe {
+	filteredCafes := []Cafe{}
+
+	h := geohash.EncodeWithPrecision(lat, long, precision)
+	for _, cafe := range cafes {
+		if strings.HasPrefix(cafe.Geohash, h) {
+			filteredCafes = append(filteredCafes, cafe)
+		}
 	}
 
-	b, err = json.Marshal(results)
+	return filteredCafes
+}
+
+func findCafeByLocation(ctx context.Context, location string) []Cafe {
+	filteredCafes := []Cafe{}
+	tr := &urlfetch.Transport{Context: ctx}
+	mapApiClient := GoogleMapApiClient{apiKey: GOOG_MAP_APIKEY}
+	lat, long, err := mapApiClient.getGeocoding(tr.RoundTrip, location)
+	if err == nil {
+		filteredCafes = findCafeByGeocoding(ctx, cafes, lat, long, 6)
+	} else {
+		log.Warningf(ctx, "can not get geocoding: %+v", err)
+	}
+	return filteredCafes
+}
+
+func sendCafeMessages(ctx context.Context, filteredCafes []Cafe, senderId int64) (returnText string) {
+	summary, items, n := cafeToFBTemplate(filteredCafes)
+
+	if n == 0 {
+		returnText = "這的地點附近沒有任何咖啡店"
+	} else {
+		if err := fbSendGeneralTemplate(ctx, senderId, json.RawMessage(summary)); err != nil {
+			returnText = "查詢失敗"
+		}
+		if err := fbSendGeneralTemplate(ctx, senderId, json.RawMessage(items)); err != nil {
+			returnText = "查詢失敗"
+		}
+	}
 	return
 }
 
@@ -462,6 +523,7 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 			// Dealing with location attachments
 			attachments := fbMsg.Content.Attachments
 			if len(attachments) != 0 && attachments[0].Type == "location" {
+				log.Debugf(ctx, "Receive attachemnt")
 				payload := FBLocationAttachment{}
 				err = json.Unmarshal(attachments[0].Payload, &payload)
 				if err != nil {
@@ -473,21 +535,15 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 
 				if user.TodoAction == "FIND_CAFE" {
 					user.TodoAction = ""
-					b, err = getCafeLocationElements(cafes, lat, long)
-					if err != nil {
-						returnText = "查詢失敗"
-					} else {
-						if err := fbSendGeneralTemplate(ctx, senderId, json.RawMessage(b)); err != nil {
-							returnText = "查詢失敗"
-						}
-					}
+					filteredCafes := findCafeByGeocoding(ctx, cafes, lat, long, 6)
+					returnText = sendCafeMessages(ctx, filteredCafes, senderId)
 				} else {
 					text := "尋找這個地點周圍的咖啡店?"
 					quickReplies := []map[string]string{
 						map[string]string{
 							"content_type": "text",
 							"title":        "是",
-							"payload":      fmt.Sprintf("FIND_CAFE:%f,%f", lat, long),
+							"payload":      fmt.Sprintf("FIND_CAFE_GEOCODING:%f,%f", lat, long),
 						},
 						map[string]string{
 							"content_type": "text",
@@ -498,11 +554,12 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 					err = fbSendTextMessage(ctx, senderId, text, quickReplies)
 				}
 			} else if fbMsg.Content.QuickReplay != nil {
+				log.Debugf(ctx, "QuickReply: %+v", fbMsg.Content.QuickReplay)
 				payload := fbMsg.Content.QuickReplay.Payload
 				payloadItems := strings.Split(payload, ":")
 				if len(payloadItems) != 0 {
 					switch payloadItems[0] {
-					case "FIND_CAFE":
+					case "FIND_CAFE_GEOCODING":
 						latlng := strings.Split(payloadItems[1], ",")
 						if len(latlng) != 2 {
 							log.Errorf(ctx, "FIND_CAFE postback arguments error: %+v", latlng)
@@ -516,15 +573,28 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 							if err != nil {
 								return
 							}
-							b, err = getCafeLocationElements(cafes, lat, long)
-							if err != nil {
-								returnText = "查詢失敗"
-							} else {
-								if err := fbSendGeneralTemplate(ctx, senderId, json.RawMessage(b)); err != nil {
-									returnText = "查詢失敗"
-								}
-							}
+							filteredCafes := findCafeByGeocoding(ctx, cafes, lat, long, 6)
+							returnText = sendCafeMessages(ctx, filteredCafes, senderId)
 						}
+					case "FIND_CAFE_LOCATION":
+						if len(payloadItems) == 2 && payloadItems[1] != "" {
+							filteredCafes := findCafeByLocation(ctx, payloadItems[1])
+							returnText = sendCafeMessages(ctx, filteredCafes, senderId)
+						}
+					case "FIND_CAFE":
+						text := "想去哪喝呢？"
+						quickReplies := []map[string]string{
+							map[string]string{
+								"content_type": "location",
+							},
+							map[string]string{
+								"content_type": "text",
+								"title":        "取消",
+								"payload":      "CANCEL",
+							},
+						}
+						err = fbSendTextMessage(ctx, senderId, text, quickReplies)
+						user.TodoAction = "FIND_CAFE"
 					case "CANCEL":
 						user.TodoAction = ""
 						err = fbSendTextMessage(ctx, senderId, "好，我知道了，有需要在跟我說。", nil)
@@ -555,21 +625,68 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 							returnText = "我身體不太舒服，等等再回你"
 						}
 						if r.TopScoringIntent.Intent == "FindCafe" {
-							user.TodoAction = "FIND_CAFE"
-							text := "現在只能用位置搜尋，可以幫我標記一下想找的位置嗎？"
-							quickReplies := []map[string]string{
-								map[string]string{
-									"content_type": "location",
-								},
-								map[string]string{
-									"content_type": "text",
-									"title":        "取消",
-									"payload":      "CANCEL",
-								},
+							locations := []string{}
+							for _, e := range r.Entities {
+								if e.Type == "Location" {
+									locations = append(locations, e.Entity)
+								}
 							}
-							err = fbSendTextMessage(ctx, senderId, text, quickReplies)
+							if len(locations) > 0 {
+								filteredCafes := findCafeByLocation(ctx, locations[0])
+								returnText = sendCafeMessages(ctx, filteredCafes, senderId)
+							} else {
+								user.TodoAction = "FIND_CAFE"
+								text := "看不出來你想要的位置，可以幫我標記一下嗎?"
+								quickReplies := []map[string]string{
+									map[string]string{
+										"content_type": "location",
+									},
+									map[string]string{
+										"content_type": "text",
+										"title":        "取消",
+										"payload":      "CANCEL",
+									},
+								}
+								err = fbSendTextMessage(ctx, senderId, text, quickReplies)
+							}
 						} else {
-							returnText = "今天天氣不錯，好像適合來杯咖啡"
+							locations := []string{}
+							for _, e := range r.Entities {
+								if e.Type == "Location" {
+									locations = append(locations, e.Entity)
+								}
+							}
+							if len(locations) > 0 {
+								text := fmt.Sprintf("是要找「%s」附近的咖啡店嗎?", locations[0])
+								quickReplies := []map[string]string{
+									map[string]string{
+										"content_type": "text",
+										"title":        "是",
+										"payload":      fmt.Sprintf("FIND_CAFE_LOCATION:%s", locations[0]),
+									},
+									map[string]string{
+										"content_type": "text",
+										"title":        "取消",
+										"payload":      "CANCEL",
+									},
+								}
+								err = fbSendTextMessage(ctx, senderId, text, quickReplies)
+							} else {
+								text := "想要在哪喝杯咖啡嗎?"
+								quickReplies := []map[string]string{
+									map[string]string{
+										"content_type": "text",
+										"title":        "是",
+										"payload":      "FIND_CAFE",
+									},
+									map[string]string{
+										"content_type": "text",
+										"title":        "取消",
+										"payload":      "CANCEL",
+									},
+								}
+								err = fbSendTextMessage(ctx, senderId, text, quickReplies)
+							}
 						}
 					}
 				}
@@ -581,10 +698,9 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		} else if fbMsg.Delivery != nil {
 		} else if fbMsg.Postback != nil {
-			payload := fbMsg.Postback.Payload
 			log.Debugf(ctx, "Postback: %+v", fbMsg.Postback)
+			payload := fbMsg.Postback.Payload
 			payloadItems := strings.Split(payload, ":")
-			log.Debugf(ctx, "Payload: %+v", payloadItems)
 			if len(payloadItems) != 0 {
 				action := payloadItems[0]
 				switch action {

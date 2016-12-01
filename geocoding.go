@@ -83,7 +83,8 @@ func (c *GoogleMapApiClient) getGeocoding(request func(*http.Request) (*http.Res
 	}
 
 	if len(geoBody.Results) == 0 {
-		err = fmt.Errorf("no results found")
+		err = fmt.Errorf("no results found for address: %s", address)
+		return
 	}
 
 	g := geoBody.Results[0]

@@ -17,4 +17,5 @@ type Cafe struct {
 	Link        string
 	Latitude    float64
 	Longitude   float64
+	Geohash     string
 }

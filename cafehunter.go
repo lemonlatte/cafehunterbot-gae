@@ -16,12 +16,12 @@ import (
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/sheets/v4"
 
+	"github.com/TomiHiltunen/geohash-golang"
 	"google.golang.org/appengine"
 	"google.golang.org/appengine/datastore"
 	"google.golang.org/appengine/log"
 	"google.golang.org/appengine/memcache"
 	"google.golang.org/appengine/urlfetch"
-	// "github.com/TomiHiltunen/geohash-golang"
 )
 
 const (
@@ -182,6 +182,7 @@ func loadCafeData(ctx context.Context) (cafes []Cafe, err error) {
 				if err == nil {
 					cafe.Latitude = lat
 					cafe.Longitude = long
+					cafe.Geohash = geohash.EncodeWithPrecision(lat, long, 8)
 				} else {
 					log.Warningf(ctx, "can not get geocoding: %+v", err)
 				}

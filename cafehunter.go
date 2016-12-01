@@ -615,7 +615,9 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 				default:
 					switch user.TodoAction {
 					case "FIND_CAFE":
-						returnText = "你好像要給我一個位置"
+						user.TodoAction = ""
+						filteredCafes := findCafeByLocation(ctx, fmt.Sprintf("%s台北", q))
+						returnText = sendCafeMessages(ctx, filteredCafes, senderId)
 					default:
 						user.TodoAction = ""
 						tr := &urlfetch.Transport{Context: ctx}

@@ -147,8 +147,7 @@ func loadCafeData(ctx context.Context) (cafes []Cafe, err error) {
 	}
 
 	mapApiClient := GoogleMapApiClient{apiKey: GOOG_MAP_APIKEY}
-
-	if len(resp.Values[2:]) > 0 {
+	if len(resp.Values[1:]) > 0 {
 		cafes = []Cafe{}
 		for _, row := range resp.Values[2:] {
 			rowLen := len(row)
@@ -156,7 +155,6 @@ func loadCafeData(ctx context.Context) (cafes []Cafe, err error) {
 				log.Warningf(ctx, "ignore the invalid cafe item: %+v", row)
 				continue
 			}
-
 			cafe := Cafe{
 				Name:        row[0].(string),
 				Wifi:        row[1].(string),
@@ -167,10 +165,10 @@ func loadCafeData(ctx context.Context) (cafes []Cafe, err error) {
 				Feeling:     row[6].(string),
 				MRTFriendly: row[7].(string),
 				Station:     row[9].(string),
-				TimeLimited: row[10].(string),
-				Plug:        row[11].(string),
+				Address:     row[10].(string),
+				TimeLimited: row[11].(string),
+				Plug:        row[12].(string),
 				Comments:    row[14].(string),
-				Address:     row[15].(string),
 			}
 			if rowLen == 17 {
 				cafe.Link = row[16].(string)

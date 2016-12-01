@@ -578,7 +578,7 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 						}
 					case "FIND_CAFE_LOCATION":
 						if len(payloadItems) == 2 && payloadItems[1] != "" {
-							filteredCafes := findCafeByLocation(ctx, payloadItems[1])
+							filteredCafes := findCafeByLocation(ctx, fmt.Sprintf("%s台北", payloadItems[1]))
 							returnText = sendCafeMessages(ctx, filteredCafes, senderId)
 						}
 					case "FIND_CAFE":
@@ -632,7 +632,7 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 								}
 							}
 							if len(locations) > 0 {
-								filteredCafes := findCafeByLocation(ctx, locations[0])
+								filteredCafes := findCafeByLocation(ctx, fmt.Sprintf("%s台北", locations[0]))
 								returnText = sendCafeMessages(ctx, filteredCafes, senderId)
 							} else {
 								user.TodoAction = "FIND_CAFE"

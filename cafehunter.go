@@ -227,7 +227,6 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		cafeKeys = append(cafeKeys, datastore.NewKey(ctx, "cafes", cafe.Name, 0, nil))
 	}
 
-	log.Debugf(ctx, "%+v", cafes)
 	_, err = datastore.PutMulti(ctx, cafeKeys, cafes)
 	if err != nil {
 		log.Errorf(ctx, err.Error())
@@ -370,7 +369,6 @@ func generateTemplateElements(ctx context.Context, items []map[string]interface{
 			"subtitle":  item["subtitle"],
 			"buttons":   item["buttons"],
 		}
-		log.Debugf(ctx, "%+v", element)
 		elements = append(elements, element)
 	}
 	return
@@ -500,7 +498,6 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fbMessages := fbObject.Entry[0].Messaging
-	log.Debugf(ctx, "%+v", fbMessages)
 
 	for _, fbMsg := range fbMessages {
 		senderId := fbMsg.Sender.Id
@@ -511,8 +508,8 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			users[senderId] = user
 		}
-		log.Infof(ctx, "User: %+v", user)
-		log.Debugf(ctx, "%+v", fbMsg)
+		log.Debugf(ctx, "User: %+v", user)
+		log.Debugf(ctx, "Message: %+v", fbMsg)
 
 		var (
 			err        error
@@ -523,7 +520,7 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 			// Dealing with location attachments
 			attachments := fbMsg.Content.Attachments
 			if len(attachments) != 0 && attachments[0].Type == "location" {
-				log.Debugf(ctx, "Receive attachemnt")
+				log.Debugf(ctx, "Receive attachemnt message")
 				payload := FBLocationAttachment{}
 				err = json.Unmarshal(attachments[0].Payload, &payload)
 				if err != nil {
@@ -554,7 +551,7 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 					err = fbSendTextMessage(ctx, senderId, text, quickReplies)
 				}
 			} else if fbMsg.Content.QuickReplay != nil {
-				log.Debugf(ctx, "QuickReply: %+v", fbMsg.Content.QuickReplay)
+				log.Debugf(ctx, "Receive QuickReply: %+v", fbMsg.Content.QuickReplay)
 				payload := fbMsg.Content.QuickReplay.Payload
 				payloadItems := strings.Split(payload, ":")
 				if len(payloadItems) != 0 {
@@ -603,7 +600,7 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			} else {
-				log.Debugf(ctx, "receive text")
+				log.Debugf(ctx, "Receive text")
 				text := fbMsg.Content.Text
 				q := strings.ToLower(text)
 				switch q {
@@ -700,7 +697,7 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		} else if fbMsg.Delivery != nil {
 		} else if fbMsg.Postback != nil {
-			log.Debugf(ctx, "Postback: %+v", fbMsg.Postback)
+			log.Debugf(ctx, "Receive Postback: %+v", fbMsg.Postback)
 			payload := fbMsg.Postback.Payload
 			payloadItems := strings.Split(payload, ":")
 			if len(payloadItems) != 0 {

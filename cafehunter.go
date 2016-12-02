@@ -459,13 +459,13 @@ func sendCafeMessages(ctx context.Context, filteredCafes []Cafe, senderId int64)
 	summary, items, n := cafeToFBTemplate(filteredCafes)
 
 	if n == 0 {
-		returnText = "這的地點附近沒有任何咖啡店"
+		returnText = "無法在我的記憶裡找到那附近的咖啡店。"
 	} else {
 		if err := fbSendGeneralTemplate(ctx, senderId, json.RawMessage(summary)); err != nil {
-			returnText = "查詢失敗"
+			returnText = "我好像壞掉了"
 		}
 		if err := fbSendGeneralTemplate(ctx, senderId, json.RawMessage(items)); err != nil {
-			returnText = "查詢失敗"
+			returnText = "我好像壞掉了"
 		}
 	}
 	return
@@ -594,7 +594,7 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 						user.TodoAction = "FIND_CAFE"
 					case "CANCEL":
 						user.TodoAction = ""
-						err = fbSendTextMessage(ctx, senderId, "好，我知道了，有需要在跟我說。", nil)
+						err = fbSendTextMessage(ctx, senderId, "好，我知道了，有需要再跟我說。", nil)
 					case "KIDDING":
 						err = fbSendTextMessage(ctx, senderId, "你有什麼毛病？", nil)
 					}

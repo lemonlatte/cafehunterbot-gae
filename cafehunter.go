@@ -433,9 +433,18 @@ func findCafeByGeocoding(ctx context.Context, cafes []Cafe, lat, long float64, p
 	filteredCafes := []Cafe{}
 
 	h := geohash.EncodeWithPrecision(lat, long, precision)
+	areas := geohash.CalculateAllAdjacent(h)
+
 	for _, cafe := range cafes {
 		if strings.HasPrefix(cafe.Geohash, h) {
 			filteredCafes = append(filteredCafes, cafe)
+		} else {
+			for _, a := range areas {
+				if strings.HasPrefix(cafe.Geohash, a) {
+					filteredCafes = append(filteredCafes, cafe)
+					break
+				}
+			}
 		}
 	}
 

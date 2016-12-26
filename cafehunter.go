@@ -13,21 +13,20 @@ import (
 	"time"
 
 	"golang.org/x/net/context"
-	"golang.org/x/oauth2/google"
-	"google.golang.org/api/sheets/v4"
 
 	"github.com/TomiHiltunen/geohash-golang"
 	"google.golang.org/appengine"
-	"google.golang.org/appengine/datastore"
 	"google.golang.org/appengine/log"
 	"google.golang.org/appengine/memcache"
 	"google.golang.org/appengine/urlfetch"
+	"gopkg.in/zabawaba99/firego.v1"
 )
 
 const (
 	BOT_TOKEN       = ""
 	PAGE_TOKEN      = ""
 	GOOG_MAP_APIKEY = ""
+	FIREBASE_AUTH_TOKEN = ""
 
 	FBMessageURI = "https://graph.facebook.com/v2.6/me/messages?access_token=" + PAGE_TOKEN
 	WELCOME_TEXT = `你好，歡迎使用 Café Hunter。請用簡單的句子跟我對話，例如：「我要找咖啡店」、「我想喝咖啡」、「士林有什麼推薦的咖啡店嗎？」`
@@ -125,112 +124,8 @@ func init() {
 	http.HandleFunc("/", handler)
 }
 
-func loadCafeData(ctx context.Context) (cafes []Cafe, err error) {
-	lock.Lock()
-	defer lock.Unlock()
-
-	client, err := google.DefaultClient(ctx, sheets.SpreadsheetsReadonlyScope)
-	if err != nil {
-		log.Errorf(ctx, "fail to establish google client: %+v", err)
-		err = fmt.Errorf("fail to establish google client: %+v", err)
-		return
-	}
-
-	srv, err := sheets.New(client)
-	spreadsheetId := "1DD70bqRm4W_Uts5do6vOO3U2C6YqY89EPuc2cfqVnW8"
-	readRange := "台北市/新北市!A:Q"
-	resp, err := srv.Spreadsheets.Values.Get(spreadsheetId, readRange).Do()
-	if err != nil {
-		log.Errorf(ctx, "unable to retrieve data from sheet. error: %+v", err)
-		err = fmt.Errorf("unable to retrieve data from sheet. error: %+v", err)
-		return
-	}
-
-	mapApiClient := GoogleMapApiClient{apiKey: GOOG_MAP_APIKEY}
-	if len(resp.Values[1:]) > 0 {
-		cafes = []Cafe{}
-		for _, row := range resp.Values[2:] {
-			rowLen := len(row)
-			if rowLen < 16 {
-				log.Warningf(ctx, "ignore the invalid cafe item: %+v", row)
-				continue
-			}
-			cafe := Cafe{
-				Name:        row[0].(string),
-				Wifi:        row[1].(string),
-				Space:       row[2].(string),
-				Clam:        row[3].(string),
-				Tasty:       row[4].(string),
-				Price:       row[5].(string),
-				Feeling:     row[6].(string),
-				MRTFriendly: row[7].(string),
-				Station:     row[9].(string),
-				Address:     row[10].(string),
-				TimeLimited: row[11].(string),
-				Plug:        row[12].(string),
-				Comments:    row[14].(string),
-			}
-			if rowLen == 17 {
-				cafe.Link = row[16].(string)
-			}
-
-			tr := &urlfetch.Transport{Context: ctx}
-			if cafe.Address != "" {
-				lat, long, err := mapApiClient.getGeocoding(tr.RoundTrip, cafe.Address)
-				if err == nil {
-					cafe.Latitude = lat
-					cafe.Longitude = long
-					cafe.Geohash = geohash.EncodeWithPrecision(lat, long, 8)
-				} else {
-					log.Warningf(ctx, "can not get geocoding: %+v", err)
-				}
-			}
-			cafes = append(cafes, cafe)
-		}
-	} else {
-		err = fmt.Errorf("no data found")
-	}
-	return
-}
-
-func loadCafeFromDataStore(ctx context.Context) ([]Cafe, error) {
-	lock.Lock()
-	defer lock.Unlock()
-
-	var err error
-	cafes := []Cafe{}
-
-	q := datastore.NewQuery("")
-	_, err = q.GetAll(ctx, &cafes)
-	return cafes, err
-}
-
 func handler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, "Hi, do you love drinking coffe?")
-
-	var err error
-	reset := r.FormValue("reset")
-	ctx := appengine.NewContext(r)
-
-	if reset == "" {
-		log.Infof(ctx, "load cafe data from datastore")
-		cafes, err = loadCafeFromDataStore(ctx)
-		if len(cafes) != 0 {
-			return
-		}
-	}
-
-	cafes, err = loadCafeData(ctx)
-	cafeKeys := []*datastore.Key{}
-
-	for _, cafe := range cafes {
-		cafeKeys = append(cafeKeys, datastore.NewKey(ctx, "cafes", cafe.Name, 0, nil))
-	}
-
-	_, err = datastore.PutMulti(ctx, cafeKeys, cafes)
-	if err != nil {
-		log.Errorf(ctx, err.Error())
-	}
 }
 
 func fbSendTextMessage(ctx context.Context, senderId int64, text string, quickReplies []map[string]string) (err error) {
@@ -374,6 +269,20 @@ func generateTemplateElements(ctx context.Context, items []map[string]interface{
 	return
 }
 
+func pointToStar(point float64) (starString string) {
+	digits := int64(point)
+	floating := point - float64(digits)
+
+	for i := int64(0); i < digits; i++ {
+		starString += "🌟"
+	}
+
+	if floating > 0 {
+		starString += "½"
+	}
+	return
+}
+
 func cafeToFBTemplate(cafes []Cafe) (summary, items []byte, n int) {
 	results := []map[string]interface{}{}
 
@@ -392,9 +301,9 @@ func cafeToFBTemplate(cafes []Cafe) (summary, items []byte, n int) {
 				"image_url": fmt.Sprintf("https://maps.googleapis.com/maps/api/staticmap?markers=%f,%f&zoom=15&size=400x200", cafe.Latitude, cafe.Longitude),
 				"item_url":  cafe.Link,
 				"subtitle": fmt.Sprintf(
-					"好喝: %s | Wifi: %s | 安靜: %s\n限時: %s | 插座: %s | 便宜: %s\n地址: %s",
-					cafe.Tasty, cafe.Wifi, cafe.Clam,
-					cafe.TimeLimited, cafe.Plug, cafe.Price,
+					"好喝: %s | Wifi: %s \n安靜: %s | 便宜: %s\n地址: %s",
+					pointToStar(cafe.Tasty), pointToStar(cafe.Wifi),
+					pointToStar(cafe.Quiet), pointToStar(cafe.Price),
 					cafe.Address),
 				"buttons": []FBButtonItem{
 					FBButtonItem{
@@ -435,16 +344,18 @@ func findCafeByGeocoding(ctx context.Context, cafes []Cafe, lat, long float64, p
 	h := geohash.EncodeWithPrecision(lat, long, precision)
 	areas := geohash.CalculateAllAdjacent(h)
 
-	for _, cafe := range cafes {
-		if strings.HasPrefix(cafe.Geohash, h) {
+	client := urlfetch.Client(ctx)
+	firegoClient := firego.New("https://cafe-hunter.firebaseio.com", client)
+	firegoClient.Auth(FIREBASE_AUTH_TOKEN)
+
+	for _, a := range areas {
+		v := map[string]Cafe{}
+		err := firegoClient.Child("cafes").OrderBy("geohash").StartAt(a).EndAt(a + "~").Value(&v)
+		if err != nil {
+			log.Errorf(ctx, "can not fetch cafes: %s", err.Error())
+		}
+		for _, cafe := range v {
 			filteredCafes = append(filteredCafes, cafe)
-		} else {
-			for _, a := range areas {
-				if strings.HasPrefix(cafe.Geohash, a) {
-					filteredCafes = append(filteredCafes, cafe)
-					break
-				}
-			}
 		}
 	}
 
@@ -457,7 +368,7 @@ func findCafeByLocation(ctx context.Context, location string) []Cafe {
 	mapApiClient := GoogleMapApiClient{apiKey: GOOG_MAP_APIKEY}
 	lat, long, err := mapApiClient.getGeocoding(tr.RoundTrip, location)
 	if err == nil {
-		filteredCafes = findCafeByGeocoding(ctx, cafes, lat, long, 6)
+		filteredCafes = findCafeByGeocoding(ctx, cafes, lat, long, 7)
 	} else {
 		log.Warningf(ctx, "can not get geocoding: %+v", err)
 	}
@@ -483,10 +394,6 @@ func sendCafeMessages(ctx context.Context, filteredCafes []Cafe, senderId int64)
 func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 	ctx := appengine.NewContext(r)
-
-	if len(cafes) == 0 {
-		cafes, _ = loadCafeFromDataStore(ctx)
-	}
 
 	var fbObject FBObject
 	buf := &bytes.Buffer{}

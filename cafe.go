@@ -1,21 +1,23 @@
 package cafehunter
 
 type Cafe struct {
-	Name        string
-	Wifi        string
-	Space       string
-	Clam        string
-	Tasty       string
-	Price       string
-	Feeling     string
-	MRTFriendly string
-	Station     string
-	TimeLimited string
-	Plug        string
-	Comments    string
-	Address     string
-	Link        string
-	Latitude    float64
-	Longitude   float64
-	Geohash     string
+	Id   string `json:"id"`
+	Name string `json:"name"`
+	City string `json:"city"`
+
+	Wifi  float64 `json:"wifi"`
+	Seat  float64 `json:"seat"`
+	Quiet float64 `json:"quiet"`
+	Tasty float64 `json:"tasty"`
+	Price float64 `json:"cheap"`
+	Music float64 `json:"music"`
+
+	TimeLimited string `json:"timeLimited"`
+	Plug        string `json:"plug"`
+
+	Address   string  `json:"address"`
+	Link      string  `json:"url"`
+	Latitude  float64 `json:"latitude,string"`
+	Longitude float64 `json:"longitude,string"`
+	Geohash   string  `json:"geohash"`
 }

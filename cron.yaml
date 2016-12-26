@@ -1,4 +1,4 @@
 cron:
 - description: update skill data from file
   url: /
-  schedule: every 24 hours
+  schedule: every 30 minutes

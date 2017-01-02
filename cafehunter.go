@@ -17,7 +17,7 @@ import (
 
 	"github.com/TomiHiltunen/geohash-golang"
 	"github.com/lemonlatte/ambassador"
-	// "github.com/looplab/fsm"
+	"github.com/looplab/fsm"
 	"gopkg.in/zabawaba99/firego.v1"
 )
 
@@ -40,6 +40,8 @@ type Location struct {
 
 type User struct {
 	Id         string
+	State      string
+	FSM        *fsm.FSM
 	TodoAction string
 	LastText   string
 }
@@ -148,17 +150,15 @@ func findCafeByGeocoding(ctx context.Context, lat, long float64, precision int) 
 	return filteredCafes
 }
 
-func findCafeByLocation(ctx context.Context, location string) []Cafe {
-	filteredCafes := []Cafe{}
+func findCafeByLocation(ctx context.Context, location string) (cafes []Cafe, err error) {
 	tr := &urlfetch.Transport{Context: ctx}
 	mapApiClient := GoogleMapApiClient{apiKey: GOOG_MAP_APIKEY}
 	lat, long, err := mapApiClient.getGeocoding(tr.RoundTrip, location)
-	if err == nil {
-		filteredCafes = findCafeByGeocoding(ctx, lat, long, 7)
-	} else {
+	if err != nil {
 		log.Warningf(ctx, "can not get geocoding: %+v", err)
+		return
 	}
-	return filteredCafes
+	return findCafeByGeocoding(ctx, lat, long, 7), nil
 }
 
 func sendCafeMessages(a ambassador.Ambassador, filteredCafes []Cafe, senderId string) (err error) {
@@ -173,6 +173,30 @@ func sendCafeMessages(a ambassador.Ambassador, filteredCafes []Cafe, senderId st
 		err = a.SendTemplate(senderId, items)
 	}
 	return
+}
+
+func newUser(senderId string) *User {
+	user := &User{
+		Id:    senderId,
+		State: "STANDBY",
+	}
+	user.FSM = fsm.NewFSM("STANDBY", fsm.Events{
+		{Name: "greeting", Src: []string{"STANDBY"}, Dst: "STANDBY"},
+		{Name: "unknownIntent", Src: []string{"STANDBY", "UNKNOWN_INTENT"}, Dst: "UNKNOWN_INTENT"},
+		{Name: "receiveIntent", Src: []string{"STANDBY", "UNKNOWN_INTENT"}, Dst: "INTENT_CONFIRMED"},
+		{Name: "unknownLocation", Src: []string{"INTENT_CONFIRMED"}, Dst: "UNKNOWN_LOCATION"},
+		{Name: "receiveGeocoding", Src: []string{"STANDBY"}, Dst: "LOCATION_CONFIRMED"},
+		{Name: "receiveAddress", Src: []string{"STANDBY"}, Dst: "LOCATION_CONFIRMED"},
+
+		{Name: "responeResult", Src: []string{"UNKNOWN_INTENT", "UNKNOWN_LOCATION", "INTENT_CONFIRMED", "LOCATION_CONFIRMED"}, Dst: "STANDBY"},
+
+		{Name: "cancel", Src: []string{"INTENT_CONFIRMED", "UNKNOWN_INTENT", "UNKNOWN_LOCATION"}, Dst: "STANDBY"},
+	}, fsm.Callbacks{
+		"after_event": func(event *fsm.Event) {
+			user.State = event.Dst
+		},
+	})
+	return user
 }
 
 func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
@@ -197,21 +221,18 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 
 		user, ok := users[senderId]
 		if !ok {
-			user = &User{
-				Id: senderId,
-			}
+			user = newUser(senderId)
 			users[senderId] = user
 		}
+		log.Debugf(ctx, "User %s is at state: %s", user.Id, user.State)
 
-		log.Debugf(ctx, "User: %+v", user)
-
-		var err error
+		var fsmErr, err error
 
 		switch msgBody := msg.Body.(type) {
 		case *ambassador.FBMessageContent:
 			log.Debugf(ctx, "Receive content message: %+v", msgBody)
 			if msgBody.IsEcho {
-				log.Infof(ctx, "ignore echo message")
+				log.Debugf(ctx, "ignore echo message")
 				break
 			}
 			// Dealing with location attachments
@@ -227,11 +248,16 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 				lat := payload.Coordinates.Latitude
 				long := payload.Coordinates.Longitude
 
-				if user.TodoAction == "FIND_CAFE" {
-					user.TodoAction = ""
+				switch user.State {
+				case "UNKNOWN_INTENT", "UNKNOWN_LOCATION", "INTENT_CONFIRMED":
+					fsmErr = user.FSM.Event("responeResult")
 					filteredCafes := findCafeByGeocoding(ctx, lat, long, 7)
 					err = sendCafeMessages(a, filteredCafes, senderId)
-				} else {
+					if err != nil {
+						log.Errorf(ctx, err.Error())
+					}
+				case "STANDBY":
+					fsmErr = user.FSM.Event("receiveGeocoding")
 					text := "尋找這個地點周圍的咖啡店?"
 					quickReplies := []map[string]string{
 						map[string]string{
@@ -254,6 +280,7 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 				if len(payloadItems) != 0 {
 					switch payloadItems[0] {
 					case "FIND_CAFE_GEOCODING":
+						fsmErr = user.FSM.Event("responeResult")
 						latlng := strings.Split(payloadItems[1], ",")
 						if len(latlng) != 2 {
 							log.Errorf(ctx, "FIND_CAFE postback arguments error: %+v", latlng)
@@ -271,11 +298,16 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 							err = sendCafeMessages(a, filteredCafes, senderId)
 						}
 					case "FIND_CAFE_LOCATION":
+						fsmErr = user.FSM.Event("responeResult")
+						var filteredCafes []Cafe
 						if len(payloadItems) == 2 && payloadItems[1] != "" {
-							filteredCafes := findCafeByLocation(ctx, fmt.Sprintf("%s台北", payloadItems[1]))
+							filteredCafes, err = findCafeByLocation(ctx, fmt.Sprintf("%s台北", payloadItems[1]))
+							if err != nil {
+							}
 							err = sendCafeMessages(a, filteredCafes, senderId)
 						}
 					case "FIND_CAFE":
+						fsmErr = user.FSM.Event("receiveIntent")
 						text := "想去哪喝呢？"
 						answers := []map[string]string{
 							map[string]string{
@@ -288,63 +320,37 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 							},
 						}
 						err = a.AskQuestion(senderId, text, answers)
-						user.TodoAction = "FIND_CAFE"
 					case "CANCEL":
-						user.TodoAction = ""
+						fsmErr = user.FSM.Event("cancel")
 						err = a.SendText(senderId, "好，我知道了，有需要再跟我說。")
 					case "KIDDING":
+						fsmErr = user.FSM.Event("cancel")
 						err = a.SendText(senderId, "不喝就不喝。")
 					}
 				}
 			} else {
-				log.Debugf(ctx, "Receive text")
 				text := msgBody.Text
 				q := strings.ToLower(text)
 				switch q {
-				case "get started":
-					fallthrough
-				case "hi", "hello", "你好", "您好":
-					user.TodoAction = ""
+				case "get started", "hi", "hello", "你好", "您好":
+					fsmErr = user.FSM.Event("greeting")
 					err = a.SendText(senderId, WELCOME_TEXT)
+					if err != nil {
+						log.Errorf(ctx, err.Error())
+					}
 				default:
-					switch user.TodoAction {
-					case "FIND_CAFE":
-						user.TodoAction = ""
-						filteredCafes := findCafeByLocation(ctx, fmt.Sprintf("%s台北", q))
+					switch user.State {
+					case "INTENT_CONFIRMED":
+						fsmErr = user.FSM.Event("responeResult")
+						var filteredCafes []Cafe
+						filteredCafes, err = findCafeByLocation(ctx, fmt.Sprintf("%s台北", q))
 						err = sendCafeMessages(a, filteredCafes, senderId)
-					default:
-						user.TodoAction = ""
+					case "UNKNOWN_LOCATION":
 						tr := &urlfetch.Transport{Context: ctx}
 						r, err := fetchIntent(tr.RoundTrip, q, false)
 						log.Infof(ctx, "LUIS Result: %+v", r)
 						if err != nil {
 							err = a.SendText(senderId, "機器人的識別功能發生故障")
-						}
-						if r.TopScoringIntent.Intent == "FindCafe" {
-							locations := []string{}
-							for _, e := range r.Entities {
-								if e.Type == "Location" {
-									locations = append(locations, e.Entity)
-								}
-							}
-							if len(locations) > 0 {
-								filteredCafes := findCafeByLocation(ctx, fmt.Sprintf("%s台北", locations[0]))
-								err = sendCafeMessages(a, filteredCafes, senderId)
-							} else {
-								user.TodoAction = "FIND_CAFE"
-								text := "看不出來你想要的位置，可以幫我標記一下嗎?"
-								quickReplies := []map[string]string{
-									map[string]string{
-										"content_type": "location",
-									},
-									map[string]string{
-										"content_type": "text",
-										"title":        "取消",
-										"payload":      "CANCEL",
-									},
-								}
-								err = a.AskQuestion(senderId, text, quickReplies)
-							}
 						} else {
 							locations := []string{}
 							for _, e := range r.Entities {
@@ -352,36 +358,76 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 									locations = append(locations, e.Entity)
 								}
 							}
-							if len(locations) > 0 {
-								text := fmt.Sprintf("是要找「%s」附近的咖啡店嗎?", locations[0])
-								quickReplies := []map[string]string{
-									map[string]string{
-										"content_type": "text",
-										"title":        "是",
-										"payload":      fmt.Sprintf("FIND_CAFE_LOCATION:%s", locations[0]),
-									},
-									map[string]string{
-										"content_type": "text",
-										"title":        "取消",
-										"payload":      "CANCEL",
-									},
+							fsmErr = user.FSM.Event("responeResult")
+							var filteredCafes []Cafe
+							filteredCafes, err = findCafeByLocation(ctx, fmt.Sprintf("%s台北", locations[0]))
+							err = sendCafeMessages(a, filteredCafes, senderId)
+						}
+					case "STANDBY", "UNKNOWN_INTENT":
+						tr := &urlfetch.Transport{Context: ctx}
+						r, err := fetchIntent(tr.RoundTrip, q, false)
+						log.Infof(ctx, "LUIS Result: %+v", r)
+						if err != nil {
+							err = a.SendText(senderId, "機器人的識別功能發生故障")
+						} else {
+							if r.TopScoringIntent.Intent == "FindCafe" {
+								fsmErr = user.FSM.Event("receiveIntent")
+								locations := []string{}
+								for _, e := range r.Entities {
+									if e.Type == "Location" {
+										locations = append(locations, e.Entity)
+									}
 								}
-								err = a.AskQuestion(senderId, text, quickReplies)
+
+								if len(locations) > 0 {
+									fsmErr = user.FSM.Event("responeResult")
+									var filteredCafes []Cafe
+									filteredCafes, err = findCafeByLocation(ctx, fmt.Sprintf("%s台北", locations[0]))
+									err = sendCafeMessages(a, filteredCafes, senderId)
+								} else {
+									fsmErr = user.FSM.Event("unknownLocation")
+									text := "找哪裡的咖啡？給我一個地名或是幫我標記出來？"
+									quickReplies := []map[string]string{
+										map[string]string{
+											"content_type": "location",
+										},
+										map[string]string{
+											"content_type": "text",
+											"title":        "取消",
+											"payload":      "CANCEL",
+										},
+									}
+									err = a.AskQuestion(senderId, text, quickReplies)
+								}
 							} else {
-								text := "想要在哪喝杯咖啡嗎?"
-								quickReplies := []map[string]string{
-									map[string]string{
-										"content_type": "text",
-										"title":        "是",
-										"payload":      "FIND_CAFE",
-									},
-									map[string]string{
-										"content_type": "text",
-										"title":        "取消",
-										"payload":      "CANCEL",
-									},
+								fsmErr = user.FSM.Event("unknownIntent")
+
+								locationReplies := []map[string]string{}
+								for _, e := range r.Entities {
+									if e.Type == "Location" {
+										locationReplies = append(locationReplies, map[string]string{
+											"content_type": "text",
+											"title":        e.Entity,
+											"payload":      fmt.Sprintf("FIND_CAFE_LOCATION:%s", e.Entity),
+										})
+									}
 								}
-								err = a.AskQuestion(senderId, text, quickReplies)
+
+								if len(locationReplies) > 0 {
+									text := "找下列附近的咖啡店嗎?"
+									locationReplies = append(locationReplies, map[string]string{
+										"content_type": "text",
+										"title":        "都不是",
+										"payload":      "CANCEL",
+									}, map[string]string{
+										"content_type": "location",
+									})
+									err = a.AskQuestion(senderId, text, locationReplies)
+								} else {
+									fsmErr = user.FSM.Event("cancel")
+									text := "哈哈，我不太懂你為什麼這麼說。" // 這邊需要廢文產生器
+									err = a.SendText(senderId, text)
+								}
 							}
 						}
 					}
@@ -400,8 +446,9 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 				action := payloadItems[0]
 				switch action {
 				case "FIND_CAFE":
-					text := "想找咖啡店嗎？給我一個你想搜尋的位置"
-					quickReplies := []map[string]string{
+					fsmErr = user.FSM.Event("receiveIntent")
+					text := "好喔，想要找哪裡的咖啡店？"
+					err = a.AskQuestion(senderId, text, []map[string]string{
 						map[string]string{
 							"content_type": "location",
 						},
@@ -410,14 +457,12 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 							"title":        "取消",
 							"payload":      "CANCEL",
 						},
-					}
-					err = a.AskQuestion(senderId, text, quickReplies)
-					user.TodoAction = "FIND_CAFE"
+					})
 				case "GET_STARTED":
+					fsmErr = user.FSM.Event("greeting")
 					err = a.SendText(senderId, WELCOME_TEXT)
-					fallthrough
 				default:
-					user.TodoAction = ""
+					fsmErr = user.FSM.Event("cancel")
 				}
 			}
 		case *ambassador.FBMessageDelivery, *ambassador.FBMessageRead:
@@ -425,8 +470,18 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 		default:
 			log.Debugf(ctx, "Receive unhandled message: %+v", msgBody)
 		}
+
+		// Handle errors for every state changing and message delivery
+		if fsmErr != nil {
+			switch fsmErr.(type) {
+			case *fsm.NoTransitionError:
+				log.Warningf(ctx, fsmErr.Error())
+			default:
+				log.Errorf(ctx, "unexpected state machine error: %s", fsmErr.Error())
+			}
+		}
 		if err != nil {
-			log.Errorf(ctx, "fail to deliver messages: %s", err.Error())
+			log.Errorf(ctx, "an error occurs on message delivery: %s", err.Error())
 			// a.SendText(senderId, "我好像壞掉了")
 		}
 	}

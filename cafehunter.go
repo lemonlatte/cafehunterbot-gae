@@ -102,7 +102,7 @@ func cafeToFBTemplate(cafes []Cafe) (summary, items interface{}, n int) {
 					ambassador.FBButtonItem{
 						Type:  "web_url",
 						Title: "View in Google Maps",
-						Url:   fmt.Sprintf("http://maps.google.com.tw/?q=%s", cafe.Address),
+						Url:   fmt.Sprintf("https://maps.google.com/?q=%s", cafe.Address),
 					},
 				},
 			}

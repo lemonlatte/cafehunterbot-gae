@@ -130,7 +130,7 @@ func findCafeByGeocoding(ctx context.Context, lat, long float64, precision int) 
 
 	h := geohash.EncodeWithPrecision(lat, long, precision)
 	areas := geohash.CalculateAllAdjacent(h)
-
+	areas = append(areas, h)
 	client := urlfetch.Client(ctx)
 
 	firegoClient := firego.New("https://cafe-hunter.firebaseio.com", client)

@@ -14,6 +14,7 @@ import (
 	"google.golang.org/appengine"
 	"google.golang.org/appengine/log"
 	"google.golang.org/appengine/urlfetch"
+	"googlemaps.github.io/maps"
 
 	"github.com/TomiHiltunen/geohash-golang"
 	"github.com/lemonlatte/ambassador"
@@ -156,13 +157,27 @@ func findCafeByGeocoding(ctx context.Context, lat, long float64, precision int) 
 }
 
 func findCafeByLocation(ctx context.Context, location string) (cafes []Cafe, err error) {
-	tr := &urlfetch.Transport{Context: ctx}
-	mapApiClient := GoogleMapApiClient{apiKey: GOOG_MAP_APIKEY}
-	lat, long, err := mapApiClient.getGeocoding(tr.RoundTrip, location)
+	client := urlfetch.Client(ctx)
+	c, err := maps.NewClient(maps.WithAPIKey(GOOG_MAP_APIKEY), maps.WithHTTPClient(client))
 	if err != nil {
-		log.Warningf(ctx, "can not get geocoding: %+v", err)
+		log.Errorf(ctx, "can not get geocoding: %s", err)
 		return
 	}
+
+	results, err := c.Geocode(ctx, &maps.GeocodingRequest{Address: location})
+	if err != nil {
+		log.Errorf(ctx, "can not get geocoding: %s", err)
+		return
+	}
+
+	if len(results) == 0 {
+		log.Warningf(ctx, "no location found")
+		return
+	}
+
+	lat := results[0].Geometry.Location.Lat
+	long := results[0].Geometry.Location.Lng
+
 	return findCafeByGeocoding(ctx, lat, long, 7), nil
 }
 

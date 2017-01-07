@@ -49,6 +49,13 @@ type User struct {
 
 var users map[string]*User = map[string]*User{}
 
+type Place struct {
+	Name             string
+	FormattedAddress string
+	Geometry         maps.AddressGeometry
+	PlaceID          string
+}
+
 func init() {
 	http.HandleFunc("/fbCallback", fbCBHandler)
 	http.HandleFunc("/", handler)
@@ -156,6 +163,49 @@ func findCafeByGeocoding(ctx context.Context, lat, long float64, precision int) 
 	return filteredCafes
 }
 
+func resolveGeocoding(ctx context.Context, location string) (places []Place, err error) {
+	client := urlfetch.Client(ctx)
+	c, err := maps.NewClient(maps.WithAPIKey(GOOG_MAP_APIKEY), maps.WithHTTPClient(client))
+	if err != nil {
+		log.Errorf(ctx, "can not create google map api client: %s", err)
+		return
+	}
+
+	places = make([]Place, 0)
+	placesResp, err := c.TextSearch(ctx, &maps.TextSearchRequest{Query: location, Language: "zh-TW"})
+	if err == nil && len(placesResp.Results) > 0 {
+		for _, r := range placesResp.Results {
+			p := Place{
+				Name:             r.Name,
+				Geometry:         r.Geometry,
+				FormattedAddress: r.FormattedAddress,
+				PlaceID:          r.PlaceID,
+			}
+			places = append(places, p)
+		}
+	} else {
+		geocodingResults, err := c.Geocode(ctx, &maps.GeocodingRequest{Address: location, Language: "zh-TW"})
+		if err == nil && len(geocodingResults) > 0 {
+			for _, r := range geocodingResults {
+				p := Place{
+					Name:             r.FormattedAddress,
+					Geometry:         r.Geometry,
+					FormattedAddress: r.FormattedAddress,
+					PlaceID:          r.PlaceID,
+				}
+				places = append(places, p)
+			}
+		} else {
+			log.Warningf(ctx, "no results found")
+		}
+	}
+
+	if len(places) > 8 {
+		places = places[0:8]
+	}
+	return
+}
+
 func findCafeByLocation(ctx context.Context, location string) (cafes []Cafe, err error) {
 	client := urlfetch.Client(ctx)
 	c, err := maps.NewClient(maps.WithAPIKey(GOOG_MAP_APIKEY), maps.WithHTTPClient(client))
@@ -195,6 +245,30 @@ func sendCafeMessages(a ambassador.Ambassador, filteredCafes []Cafe, senderId st
 	return
 }
 
+func askLocationConfirm(a ambassador.Ambassador, places []Place, senderId string) (err error) {
+	locationChoiceReplies := []map[string]string{}
+	for _, p := range places {
+		lat := p.Geometry.Location.Lat
+		long := p.Geometry.Location.Lng
+		locationChoiceReplies = append(locationChoiceReplies, map[string]string{
+			"content_type": "text",
+			"title":        p.Name,
+			"payload":      fmt.Sprintf("FIND_CAFE_GEOCODING:%f,%f", lat, long),
+		})
+
+	}
+	locationChoiceReplies = append(locationChoiceReplies, map[string]string{
+		"content_type": "text",
+		"title":        "都不是",
+		"payload":      "CANCEL",
+	}, map[string]string{
+		"content_type": "location",
+	})
+	text := "我需要知道更明確的範圍"
+	err = a.AskQuestion(senderId, text, locationChoiceReplies)
+	return
+}
+
 func newUser(senderId string) *User {
 	user := &User{
 		Id:    senderId,
@@ -205,12 +279,13 @@ func newUser(senderId string) *User {
 		{Name: "unknownIntent", Src: []string{"STANDBY", "UNKNOWN_INTENT"}, Dst: "UNKNOWN_INTENT"},
 		{Name: "receiveIntent", Src: []string{"STANDBY", "UNKNOWN_INTENT"}, Dst: "INTENT_CONFIRMED"},
 		{Name: "unknownLocation", Src: []string{"INTENT_CONFIRMED"}, Dst: "UNKNOWN_LOCATION"},
-		{Name: "receiveGeocoding", Src: []string{"STANDBY"}, Dst: "LOCATION_CONFIRMED"},
-		{Name: "receiveAddress", Src: []string{"STANDBY"}, Dst: "LOCATION_CONFIRMED"},
+		{Name: "getConfusedLocation", Src: []string{"INTENT_CONFIRMED", "UNKNOWN_LOCATION"}, Dst: "UNSURE_LOCATION"},
+		{Name: "receiveGeocoding", Src: []string{"STANDBY", "UNSURE_LOCATION"}, Dst: "LOCATION_CONFIRMED"},
+		{Name: "receiveAddress", Src: []string{"STANDBY", "UNSURE_LOCATION"}, Dst: "LOCATION_CONFIRMED"},
 
-		{Name: "responeResult", Src: []string{"UNKNOWN_INTENT", "UNKNOWN_LOCATION", "INTENT_CONFIRMED", "LOCATION_CONFIRMED"}, Dst: "STANDBY"},
+		{Name: "responeResult", Src: []string{"UNKNOWN_INTENT", "UNKNOWN_LOCATION", "INTENT_CONFIRMED", "UNSURE_LOCATION", "LOCATION_CONFIRMED"}, Dst: "STANDBY"},
 
-		{Name: "cancel", Src: []string{"INTENT_CONFIRMED", "UNKNOWN_INTENT", "UNKNOWN_LOCATION"}, Dst: "STANDBY"},
+		{Name: "cancel", Src: []string{"INTENT_CONFIRMED", "UNKNOWN_INTENT", "UNKNOWN_LOCATION", "UNSURE_LOCATION"}, Dst: "STANDBY"},
 	}, fsm.Callbacks{
 		"after_event": func(event *fsm.Event) {
 			user.State = event.Dst
@@ -276,7 +351,7 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 					if err != nil {
 						log.Errorf(ctx, err.Error())
 					}
-				case "STANDBY":
+				case "STANDBY", "UNSURE_LOCATION":
 					fsmErr = user.FSM.Event("receiveGeocoding")
 					text := "尋找這個地點周圍的咖啡店?"
 					quickReplies := []map[string]string{
@@ -318,13 +393,23 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 							err = sendCafeMessages(a, filteredCafes, senderId)
 						}
 					case "FIND_CAFE_LOCATION":
-						fsmErr = user.FSM.Event("responeResult")
-						var filteredCafes []Cafe
 						if len(payloadItems) == 2 && payloadItems[1] != "" {
-							filteredCafes, err = findCafeByLocation(ctx, fmt.Sprintf("%s台北", payloadItems[1]))
-							if err != nil {
+							var places []Place
+							places, err = resolveGeocoding(ctx, payloadItems[1])
+							if len(places) == 0 {
+								fsmErr = user.FSM.Event("responeResult")
+								err = a.SendText(senderId, "無法辨識的地點")
+							} else if len(places) == 1 {
+								var filteredCafes []Cafe
+								fsmErr = user.FSM.Event("responeResult")
+								lat := places[0].Geometry.Location.Lat
+								long := places[0].Geometry.Location.Lng
+								filteredCafes = findCafeByGeocoding(ctx, lat, long, 7)
+								err = sendCafeMessages(a, filteredCafes, senderId)
+							} else {
+								fsmErr = user.FSM.Event("getConfusedLocation")
+								err = askLocationConfirm(a, places, senderId)
 							}
-							err = sendCafeMessages(a, filteredCafes, senderId)
 						}
 					case "FIND_CAFE":
 						fsmErr = user.FSM.Event("receiveIntent")
@@ -360,11 +445,23 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 					}
 				default:
 					switch user.State {
-					case "INTENT_CONFIRMED":
-						fsmErr = user.FSM.Event("responeResult")
-						var filteredCafes []Cafe
-						filteredCafes, err = findCafeByLocation(ctx, fmt.Sprintf("%s台北", q))
-						err = sendCafeMessages(a, filteredCafes, senderId)
+					case "INTENT_CONFIRMED", "UNSURE_LOCATION":
+						var places []Place
+						places, err = resolveGeocoding(ctx, q)
+						if len(places) == 0 {
+							fsmErr = user.FSM.Event("responeResult")
+							err = a.SendText(senderId, "無法辨識的地點")
+						} else if len(places) == 1 {
+							var filteredCafes []Cafe
+							fsmErr = user.FSM.Event("responeResult")
+							lat := places[0].Geometry.Location.Lat
+							long := places[0].Geometry.Location.Lng
+							filteredCafes = findCafeByGeocoding(ctx, lat, long, 7)
+							err = sendCafeMessages(a, filteredCafes, senderId)
+						} else {
+							fsmErr = user.FSM.Event("getConfusedLocation")
+							err = askLocationConfirm(a, places, senderId)
+						}
 					case "UNKNOWN_LOCATION":
 						tr := &urlfetch.Transport{Context: ctx}
 						r, err := fetchIntent(tr.RoundTrip, q, false)
@@ -378,10 +475,39 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 									locations = append(locations, e.Entity)
 								}
 							}
-							fsmErr = user.FSM.Event("responeResult")
-							var filteredCafes []Cafe
-							filteredCafes, err = findCafeByLocation(ctx, fmt.Sprintf("%s台北", locations[0]))
-							err = sendCafeMessages(a, filteredCafes, senderId)
+
+							if len(locations) > 0 {
+								var places []Place
+								places, err = resolveGeocoding(ctx, locations[0])
+								if len(places) == 0 {
+									fsmErr = user.FSM.Event("responeResult")
+									err = a.SendText(senderId, "無法辨識的地點")
+								} else if len(places) == 1 {
+									var filteredCafes []Cafe
+									fsmErr = user.FSM.Event("responeResult")
+									lat := places[0].Geometry.Location.Lat
+									long := places[0].Geometry.Location.Lng
+									filteredCafes = findCafeByGeocoding(ctx, lat, long, 7)
+									err = sendCafeMessages(a, filteredCafes, senderId)
+								} else {
+									fsmErr = user.FSM.Event("getConfusedLocation")
+									err = askLocationConfirm(a, places, senderId)
+								}
+							} else {
+								fsmErr = user.FSM.Event("unknownLocation")
+								text := "找哪裡的咖啡？給我一個地名或是幫我標記出來？"
+								quickReplies := []map[string]string{
+									map[string]string{
+										"content_type": "location",
+									},
+									map[string]string{
+										"content_type": "text",
+										"title":        "取消",
+										"payload":      "CANCEL",
+									},
+								}
+								err = a.AskQuestion(senderId, text, quickReplies)
+							}
 						}
 					case "STANDBY", "UNKNOWN_INTENT":
 						tr := &urlfetch.Transport{Context: ctx}
@@ -400,10 +526,22 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 								}
 
 								if len(locations) > 0 {
-									fsmErr = user.FSM.Event("responeResult")
-									var filteredCafes []Cafe
-									filteredCafes, err = findCafeByLocation(ctx, fmt.Sprintf("%s台北", locations[0]))
-									err = sendCafeMessages(a, filteredCafes, senderId)
+									var places []Place
+									places, err = resolveGeocoding(ctx, locations[0])
+									if len(places) == 0 {
+										fsmErr = user.FSM.Event("responeResult")
+										err = a.SendText(senderId, "無法辨識的地點")
+									} else if len(places) == 1 {
+										var filteredCafes []Cafe
+										fsmErr = user.FSM.Event("responeResult")
+										lat := places[0].Geometry.Location.Lat
+										long := places[0].Geometry.Location.Lng
+										filteredCafes = findCafeByGeocoding(ctx, lat, long, 7)
+										err = sendCafeMessages(a, filteredCafes, senderId)
+									} else {
+										fsmErr = user.FSM.Event("getConfusedLocation")
+										err = askLocationConfirm(a, places, senderId)
+									}
 								} else {
 									fsmErr = user.FSM.Event("unknownLocation")
 									text := "找哪裡的咖啡？給我一個地名或是幫我標記出來？"

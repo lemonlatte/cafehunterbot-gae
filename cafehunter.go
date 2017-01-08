@@ -273,7 +273,7 @@ func askLocationConfirm(a ambassador.Ambassador, places []Place, senderId string
 	}, map[string]string{
 		"content_type": "location",
 	})
-	text := "我需要知道更明確的範圍"
+	text := "範圍不夠清楚，幫我從下方選出最接近的位置"
 	err = a.AskQuestion(senderId, text, locationChoiceReplies)
 	return
 }
@@ -567,7 +567,8 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 									err = a.AskQuestion(senderId, text, quickReplies)
 								}
 							} else {
-								fsmErr = user.FSM.Event("unknownIntent")
+								// 直接假設要找咖啡店
+								fsmErr = user.FSM.Event("receiveIntent")
 
 								locationReplies := []map[string]string{}
 								for _, e := range r.Entities {
@@ -580,8 +581,27 @@ func fbCBPostHandler(w http.ResponseWriter, r *http.Request) {
 									}
 								}
 
-								if len(locationReplies) > 0 {
-									text := "找下列附近的咖啡店嗎?"
+								if len(locationReplies) == 1 {
+									location := locationReplies[0]["title"]
+									err = a.SendText(senderId, fmt.Sprintf("為您尋找「%s」的咖啡店", location))
+									var places []Place
+									places, err = resolveGeocoding(ctx, location)
+									if len(places) == 0 {
+										fsmErr = user.FSM.Event("responeResult")
+										err = a.SendText(senderId, "我看不懂這個地點，需要更清楚的描述。")
+									} else if len(places) == 1 {
+										var filteredCafes []Cafe
+										fsmErr = user.FSM.Event("responeResult")
+										lat := places[0].Geometry.Location.Lat
+										long := places[0].Geometry.Location.Lng
+										filteredCafes = findCafeByGeocoding(ctx, lat, long, 7)
+										err = sendCafeMessages(a, filteredCafes, senderId)
+									} else {
+										fsmErr = user.FSM.Event("getConfusedLocation")
+										err = askLocationConfirm(a, places, senderId)
+									}
+								} else if len(locationReplies) > 1 {
+									text := "你提到了一個以上的位置，是哪個?"
 									locationReplies = append(locationReplies, map[string]string{
 										"content_type": "text",
 										"title":        "都不是",

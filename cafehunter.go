@@ -172,7 +172,10 @@ func resolveGeocoding(ctx context.Context, location string) (places []Place, err
 	}
 
 	places = make([]Place, 0)
-	placesResp, err := c.TextSearch(ctx, &maps.TextSearchRequest{Query: location, Language: "zh-TW"})
+	placesResp, err := c.TextSearch(ctx, &maps.TextSearchRequest{
+		Query:    fmt.Sprintf("%s+in+Taiwan", location),
+		Language: "zh-TW",
+	})
 	if err == nil && len(placesResp.Results) > 0 {
 		for _, r := range placesResp.Results {
 			p := Place{
@@ -184,7 +187,13 @@ func resolveGeocoding(ctx context.Context, location string) (places []Place, err
 			places = append(places, p)
 		}
 	} else {
-		geocodingResults, err := c.Geocode(ctx, &maps.GeocodingRequest{Address: location, Language: "zh-TW"})
+		geocodingResults, err := c.Geocode(ctx, &maps.GeocodingRequest{
+			Address: location,
+			Components: map[maps.Component]string{
+				maps.ComponentCountry: "TW",
+			},
+			Language: "zh-TW",
+		})
 		if err == nil && len(geocodingResults) > 0 {
 			for _, r := range geocodingResults {
 				p := Place{
